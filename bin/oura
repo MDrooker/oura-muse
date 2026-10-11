@@ -17,6 +17,7 @@ import json
 import os
 import sys
 import threading
+import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -111,7 +112,7 @@ def cmd_auth_status(args):
         "redirect_uri": cfg["redirect_uri"],
         "authorized": bool(tokens),
         "access_token_expires_in_sec":
-            max(0, (tokens or {}).get("expires_at", 0) - __import__("time").time())
+            max(0, int((tokens or {}).get("expires_at", 0) - time.time()))
             if tokens else None,
         "sandbox_note": "use --sandbox to query fake data without an account",
     })

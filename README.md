@@ -1,8 +1,8 @@
 # oura-muse
 
 Oura Ring API v2 client + CLI, built to be dropped into a
-[Muse](https://muse.ai) workspace as a skill (`~/workspace/skills/oura/`) —
-and usable anywhere else as a plain Python CLI. Stdlib only, zero dependencies.
+[Muse](https://muse.ai) workspace as a skill — and usable anywhere else as a
+plain Python CLI. Stdlib only, zero dependencies.
 
 ## What it does
 
@@ -12,6 +12,8 @@ Reads your Oura Ring data through the official Oura API v2:
 - Readiness scores with contributors
 - Activity, workouts, heart-rate time series, nightly SpO2, stress, resilience
 - VO2 max estimates, personal info
+
+All output is JSON, so it pipes cleanly into scripts, dashboards, and AI agents.
 
 ## Quickstart
 
@@ -35,7 +37,7 @@ Copy the **client ID** and **client secret**.
 This prints an authorize URL. Open it, approve access, and paste back the URL
 your browser lands on (it contains `?code=...`). If you're running on your own
 machine with a browser, `./bin/oura auth login --local-server` captures the
-code automatically.
+code automatically — no pasting.
 
 Tokens are stored in `~/.config/oura-muse/` (mode `0600`) and never printed.
 
@@ -49,21 +51,25 @@ Tokens are stored in `~/.config/oura-muse/` (mode `0600`) and never printed.
 ./bin/oura whoami                            # connection test
 ```
 
-All output is JSON. Run `./bin/oura --help` for every command.
+Run `./bin/oura --help` for every command.
 
 No account handy? `./bin/oura --sandbox readiness` hits Oura's fake-data
 sandbox — no credentials needed.
 
-## As a Muse skill
+## Using it with Muse
 
-Copy (or symlink) this repo to `~/workspace/skills/oura/`:
+**As a workspace skill** (recommended): copy this repo to
+`~/workspace/skills/oura/` and Muse picks up `SKILL.md` automatically. The
+agent then calls `bin/oura` directly — readiness, sleep, and HRV land in
+morning health reviews and weekly briefs with no Apple Watch required.
 
-```bash
-cp -r oura-muse ~/workspace/skills/oura
-```
+**As a platform connector** (alternative): connect Oura through Muse's managed
+OAuth instead of the CLI's token file. Same API, platform-owned credentials —
+see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for both paths and the trade-offs.
 
-Muse will pick up `SKILL.md` automatically. The skill's `bin/oura` is the same
-CLI documented above.
+Full deployment playbook (local CLI, cron syncs, skill install, connector
+setup, troubleshooting, going-public checklist):
+**[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**
 
 ## Configuration
 
@@ -93,14 +99,18 @@ CLI documented above.
 ## Layout
 
 ```
-├── SKILL.md          # Muse skill definition
+├── SKILL.md            # Muse skill definition
 ├── bin/
-│   ├── oura          # CLI
-│   └── oura_lib.py   # OAuth2 + v2 client (single file, stdlib only)
+│   ├── oura            # CLI
+│   └── oura_lib.py     # OAuth2 + v2 client (single file, stdlib only)
+├── docs/
+│   └── DEPLOYMENT.md   # deployment runbook: CLI, skill, connector, cron, troubleshooting
 ├── references/
-│   └── api.md        # endpoint / scope / token reference
-└── tests/
-    └── test_sandbox.py
+│   └── api.md          # endpoint / scope / token reference
+├── tests/
+│   └── test_sandbox.py # live tests against Oura's fake-data sandbox
+└── .github/workflows/
+    └── test.yml        # CI: compile check + sandbox tests on every push
 ```
 
 ## License

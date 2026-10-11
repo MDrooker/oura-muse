@@ -23,7 +23,6 @@ AUTHORIZE_URL = "https://cloud.ouraring.com/oauth/authorize"
 TOKEN_URL = "https://api.ouraring.com/oauth/token"
 REVOKE_URL = "https://api.ouraring.com/oauth/revoke"
 API_BASE = "https://api.ouraring.com"
-SANDBOX_BASE = "https://api.ouraring.com/v2/sandbox"
 
 # Scopes per Oura's authentication page. NOTE: the OpenAPI doc keys the SpO2
 # scope as `spo2Daily` while the auth page says `spo2` — one of them is a typo.
@@ -176,12 +175,26 @@ class TokenStore:
                         "No tokens stored. Run `oura auth login` first.")
                 if tokens.get("expires_at", 0) > time.time() + leeway:
                     return tokens["access_token"]
-                new_tokens = refresh_tokens(
-                    client_id, client_secret, tokens["refresh_token"])
-                self._save_locked(new_tokens)  # persist BEFORE use
-                return new_tokens["access_token"]
+                return self._refresh_locked(client_id, client_secret)
             finally:
                 fcntl.flock(lockf, fcntl.LOCK_UN)
+
+    def refresh_now(self, client_id, client_secret):
+        """Force a refresh (e.g. after a 401), under lock. Returns new access token."""
+        _ensure_dir()
+        with open(self.path, "a+") as lockf:
+            fcntl.flock(lockf, fcntl.LOCK_EX)
+            try:
+                return self._refresh_locked(client_id, client_secret)
+            finally:
+                fcntl.flock(lockf, fcntl.LOCK_UN)
+
+    def _refresh_locked(self, client_id, client_secret):
+        tokens = self.load() or {}
+        new_tokens = refresh_tokens(
+            client_id, client_secret, tokens.get("refresh_token", ""))
+        self._save_locked(new_tokens)  # persist BEFORE use
+        return new_tokens["access_token"]
 
     def save(self, tokens):
         _ensure_dir()
@@ -230,16 +243,7 @@ class OuraClient:
         except urllib.error.HTTPError as e:
             if e.code == 401 and not _retried and not self.sandbox:
                 # Token may have been revoked server-side; force one refresh.
-                with open(self.store.path, "a+") as lockf:
-                    fcntl.flock(lockf, fcntl.LOCK_EX)
-                    try:
-                        tokens = self.store.load() or {}
-                        new_tokens = refresh_tokens(
-                            self.client_id, self.client_secret,
-                            tokens.get("refresh_token", ""))
-                        self.store._save_locked(new_tokens)
-                    finally:
-                        fcntl.flock(lockf, fcntl.LOCK_UN)
+                self.store.refresh_now(self.client_id, self.client_secret)
                 return self._request(method, path, params, _retried=True)
             if e.code == 403:
                 raise OuraError(

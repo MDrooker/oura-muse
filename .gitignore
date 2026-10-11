@@ -1,0 +1,5 @@
+# local config & tokens (never commit)
+.config/
+*.pyc
+__pycache__/
+.pytest_cache/

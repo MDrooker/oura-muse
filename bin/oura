@@ -1,0 +1,199 @@
+#!/usr/bin/env python3
+"""oura — command-line client for the Oura Ring API v2.
+
+Setup (once):
+  1. Register an app at https://cloud.ouraring.com/oauth/applications
+     (needs an Oura account) and add this redirect URI:
+         http://localhost:8888/callback
+  2. oura auth login            # prints an authorize URL; paste back the code
+  3. oura readiness --start 2026-10-01
+
+Tokens live in ~/.config/oura-muse/ (0600). They are never printed.
+Use --sandbox to hit Oura's fake-data sandbox (no account needed).
+"""
+import argparse
+import getpass
+import json
+import os
+import sys
+import threading
+import urllib.parse
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import oura_lib
+from oura_lib import OuraClient, OuraError, TokenStore, load_config, save_config
+
+
+def _client(args):
+    cfg = load_config()
+    if not args.sandbox and (not cfg["client_id"] or not cfg["client_secret"]):
+        sys.exit("Missing client credentials. Run `oura auth login` first "
+                 "(or set OURA_CLIENT_ID / OURA_CLIENT_SECRET).")
+    return OuraClient(cfg["client_id"], cfg["client_secret"],
+                      sandbox=args.sandbox)
+
+
+def _dump(obj):
+    print(json.dumps(obj, indent=2, default=str))
+
+
+def cmd_auth_login(args):
+    cfg = load_config()
+    client_id = cfg["client_id"] or input("Oura client ID: ").strip()
+    client_secret = cfg["client_secret"] or getpass.getpass("Oura client secret: ").strip()
+    redirect_uri = cfg["redirect_uri"]
+    scopes = args.scopes or oura_lib.DEFAULT_SCOPES
+    save_config(client_id, client_secret, redirect_uri)
+
+    url = oura_lib.authorize_url(client_id, redirect_uri, scopes)
+    code = None
+
+    if args.local_server:
+        code = _login_via_localhost(url, redirect_uri)
+    else:
+        print("\n1. Open this URL in your browser and authorize the app:\n")
+        print("   " + url + "\n")
+        print("2. You will land on a page that can't load (that's fine).")
+        print("   Copy the full address-bar URL (it contains ?code=...)\n")
+        pasted = input("   Paste it here: ")
+        code = oura_lib.extract_code(pasted)
+
+    tokens = oura_lib.exchange_code(client_id, client_secret, code, redirect_uri)
+    TokenStore().save(tokens)
+    print("\nAuthorized. Tokens stored in ~/.config/oura-muse/ (mode 0600).")
+    print("Note: authorization codes are single-use and expire after 10 minutes.")
+
+
+def _login_via_localhost(url, redirect_uri):
+    """Capture the OAuth code with a throwaway local HTTP server."""
+    parsed = urllib.parse.urlparse(redirect_uri)
+    port = parsed.port or 80
+    captured = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            captured.update(q)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(
+                b"<h1>Authorized</h1><p>You can close this tab.</p>")
+
+        def log_message(self, *a):
+            pass
+
+    server = HTTPServer(("127.0.0.1", port), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    print("\nOpening your browser for Oura authorization...\n   " + url)
+    import webbrowser
+    webbrowser.open(url)
+    print("\nWaiting for the redirect (Ctrl-C to abort)...")
+    try:
+        while "code" not in captured and "error" not in captured:
+            thread.join(0.5)
+    except KeyboardInterrupt:
+        sys.exit("\nAborted.")
+    finally:
+        server.shutdown()
+    if "error" in captured:
+        sys.exit("Authorization failed: %s" % captured["error"][0])
+    return captured["code"][0]
+
+
+def cmd_auth_status(args):
+    cfg = load_config()
+    tokens = TokenStore().load()
+    _dump({
+        "client_configured": bool(cfg["client_id"] and cfg["client_secret"]),
+        "redirect_uri": cfg["redirect_uri"],
+        "authorized": bool(tokens),
+        "access_token_expires_in_sec":
+            max(0, (tokens or {}).get("expires_at", 0) - __import__("time").time())
+            if tokens else None,
+        "sandbox_note": "use --sandbox to query fake data without an account",
+    })
+
+
+def cmd_auth_logout(args):
+    client = _client(args)
+    client.revoke()
+    print("Tokens revoked and cleared.")
+
+
+def _range_args(p):
+    p.add_argument("--start", help="start date YYYY-MM-DD (default: 7 days ago)")
+    p.add_argument("--end", help="end date YYYY-MM-DD (default: today)")
+
+
+def _defaults(args):
+    import datetime
+    end = args.end or datetime.date.today().isoformat()
+    start = args.start or (
+        datetime.date.today() - datetime.timedelta(days=7)).isoformat()
+    return start, end
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="oura",
+                                 description="Oura Ring API v2 client")
+    ap.add_argument("--sandbox", action="store_true",
+                    help="use Oura's fake-data sandbox (no account needed)")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("auth", help="authorization management")
+    pauth = p.add_subparsers(dest="auth_cmd", required=True)
+    pl = pauth.add_parser("login", help="run the OAuth2 authorization flow")
+    pl.add_argument("--local-server", action="store_true",
+                    help="capture the code with a localhost server + browser")
+    pl.add_argument("--scopes", default=None,
+                    help="space-separated scopes (default: '%s')"
+                    % oura_lib.DEFAULT_SCOPES)
+    pl.set_defaults(fn=cmd_auth_login)
+    ps = pauth.add_parser("status", help="show auth state (no secrets)")
+    ps.set_defaults(fn=cmd_auth_status)
+    po = pauth.add_parser("logout", help="revoke tokens and clear storage")
+    po.set_defaults(fn=cmd_auth_logout)
+
+    def add_data(name, help_text, method):
+        pd = sub.add_parser(name, help=help_text)
+        _range_args(pd)
+
+        def fn(a, _m=method):
+            c = _client(a)
+            _dump(getattr(c, _m)(*_defaults(a)))
+        pd.set_defaults(fn=fn)
+
+    add_data("sleep", "daily sleep summaries", "daily_sleep")
+    add_data("sleep-periods", "detailed sleep periods", "sleep_periods")
+    add_data("readiness", "daily readiness scores", "daily_readiness")
+    add_data("activity", "daily activity summaries", "daily_activity")
+    add_data("spo2", "nightly SpO2 averages", "daily_spo2")
+    add_data("stress", "daily stress", "daily_stress")
+    add_data("resilience", "daily resilience", "daily_resilience")
+    add_data("vo2max", "VO2 max estimates", "vo2_max")
+    add_data("workouts", "workout summaries", "workouts")
+
+    ph = sub.add_parser("heartrate", help="heart-rate time series")
+    ph.add_argument("--start-datetime", required=True,
+                    help="ISO datetime, e.g. 2026-10-10T00:00:00-06:00")
+    ph.add_argument("--end-datetime", required=True, help="ISO datetime")
+    ph.set_defaults(fn=lambda a: _dump(
+        _client(a).heartrate(a.start_datetime, a.end_datetime)))
+
+    pw = sub.add_parser("whoami", help="personal info (connection test)")
+    pw.set_defaults(fn=lambda a: _dump(_client(a).personal_info()))
+
+    args = ap.parse_args(argv)
+    try:
+        args.fn(args)
+    except OuraError as e:
+        sys.exit("error: %s" % e)
+    except KeyboardInterrupt:
+        sys.exit("\nAborted.")
+
+
+if __name__ == "__main__":
+    main()

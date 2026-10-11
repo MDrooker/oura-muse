@@ -42,6 +42,12 @@ Tokens live in `~/.config/oura-muse/` (mode `0600`). The CLI refreshes them
 automatically; never copy `tokens.json` between machines while both are active
 — refresh tokens are single-use and the two copies will race.
 
+**Push instead of polling:** if you run a public HTTPS endpoint, Oura's
+webhooks deliver near-real-time event notifications (see README + 
+`examples/webhook_receiver.py`). Manage subscriptions with
+`oura webhook {list,create,delete,renew}` — they authenticate with your app's
+client ID/secret and expire after ~90 days, so calendar a `renew`.
+
 ---
 
 ## Option B — Muse workspace skill (recommended for Muse users)

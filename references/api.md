@@ -60,7 +60,33 @@ partially consent, and the redirect carries the actually-granted list.
 ## Limits & gating
 
 - 5000 requests / 5 min, plus per-token and per-application buckets (429 +
-  `Retry-After`).
+  `Retry-After`). The client retries once after a short backoff, then raises.
 - Apps are capped at 10 users before Oura approval is required
   (contact `api-support@ouraring.com`).
 - Gen3+ ring **without an active Oura membership** gets 403 on data routes.
+
+## Webhooks
+
+App-level subscriptions (authenticate with `x-client-id` / `x-client-secret`
+headers, **not** a user access token). One subscription per
+(event_type, data_type) pair.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/v2/webhook/subscription` | create |
+| `GET` | `/v2/webhook/subscription` | list |
+| `GET` | `/v2/webhook/subscription/{id}` | fetch one |
+| `PUT` | `/v2/webhook/subscription/renew/{id}` | renew (~90-day TTL) |
+| `DELETE` | `/v2/webhook/subscription/{id}` | delete |
+
+Create body: `callback_url` (public HTTPS, required), `event_type`
+(`create`/`update`/`delete`), `data_type` (e.g. `daily_sleep`, `workout`,
+`session`, `daily_spo2`, `heartrate`), `verification_token` (your secret,
+echoed on events).
+
+Lifecycle notes:
+- Oura sends a GET verification challenge to the callback URL at creation;
+  answer 200 or the subscription won't activate.
+- Subscriptions expire after ~90 days — renew them.
+- Event POSTs carry a reference (data_type + object id + user id), not the
+  full record; fetch it via the data routes.

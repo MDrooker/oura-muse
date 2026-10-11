@@ -2,7 +2,8 @@
 
 Oura Ring API v2 client + CLI, built to be dropped into a
 [Muse](https://muse.ai) workspace as a skill — and usable anywhere else as a
-plain Python CLI. Stdlib only, zero dependencies.
+plain Python CLI. Stdlib only, zero dependencies. Runs on macOS and Linux
+(the token file locking uses `fcntl`, so Windows isn't supported).
 
 ## What it does
 
@@ -56,6 +57,23 @@ Run `./bin/oura --help` for every command.
 No account handy? `./bin/oura --sandbox readiness` hits Oura's fake-data
 sandbox — no credentials needed.
 
+## Webhooks (push instead of polling)
+
+For near-real-time updates, subscribe to Oura's webhooks rather than polling:
+
+```bash
+./bin/oura webhook create --callback-url https://your.host/oura-webhook \
+    --event-type create --data-type daily_sleep
+./bin/oura webhook list
+./bin/oura webhook renew <id>    # subscriptions expire after ~90 days
+```
+
+Webhook management authenticates with your app's client ID/secret (not the
+user token). Your endpoint must be public HTTPS — Oura sends a GET
+verification challenge at creation time. `examples/webhook_receiver.py` is a
+minimal stdlib receiver to start from; event payloads carry a record
+reference, so fetch the data with `./bin/oura` when an event arrives.
+
 ## Using it with Muse
 
 **As a workspace skill** (recommended): copy this repo to
@@ -105,6 +123,8 @@ setup, troubleshooting, going-public checklist):
 │   └── oura_lib.py     # OAuth2 + v2 client (single file, stdlib only)
 ├── docs/
 │   └── DEPLOYMENT.md   # deployment runbook: CLI, skill, connector, cron, troubleshooting
+├── examples/
+│   └── webhook_receiver.py  # minimal stdlib webhook receiver (starting point)
 ├── references/
 │   └── api.md          # endpoint / scope / token reference
 ├── tests/

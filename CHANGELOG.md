@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Webhook subscription management: `oura webhook {list,get,create,delete,renew}`
+  (app-credential auth), plus `examples/webhook_receiver.py` starter receiver
+- 429 responses now get one retry after a short backoff before raising
+- README notes macOS/Linux-only (token locking uses `fcntl`)
+
 ## 0.1.0 — 2026-10-11
 
 Initial public release.

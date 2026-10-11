@@ -15,6 +15,7 @@ Never log or print tokens, codes, or client secrets.
 import fcntl
 import json
 import os
+import secrets
 import time
 import urllib.parse
 import urllib.request
@@ -251,6 +252,11 @@ class OuraClient:
                     "needed scope, or (Gen3+) there is no active Oura "
                     "membership on the account.")
             if e.code == 429:
+                if not _retried:
+                    # One polite retry with backoff before giving up — the
+                    # limit is 5000 req / 5 min, so a short wait usually clears it.
+                    time.sleep(2)
+                    return self._request(method, path, params, _retried=True)
                 raise OuraError(
                     "Rate limited by Oura (5000 req / 5 min). Back off and retry.")
             detail = e.read().decode("utf-8", "ignore")[:500]
@@ -336,3 +342,92 @@ class OuraClient:
             except Exception:
                 pass
         self.store.clear()
+
+
+# ---------------------------------------------------------------------------
+# Webhook subscription management.
+#
+# Unlike the data routes, these authenticate with the APP's client_id /
+# client_secret (x-client-id / x-client-secret headers), not with a user's
+# OAuth access token. Subscriptions are app-level: one per
+# (event_type, data_type) pair.
+#
+# Lifecycle: creating a subscription makes Oura send a GET verification
+# challenge to the callback URL — your endpoint must answer 200 before the
+# subscription activates. Subscriptions expire after ~90 days and must be
+# renewed. Event POSTs carry a reference (data_type + object id + user id),
+# not the full record; fetch the data via the normal routes.
+# ---------------------------------------------------------------------------
+
+WEBHOOK_BASE = API_BASE + "/v2/webhook/subscription"
+
+WEBHOOK_EVENT_TYPES = ("create", "update", "delete")
+WEBHOOK_DATA_TYPES = (
+    "daily_sleep", "sleep", "daily_readiness", "daily_activity",
+    "daily_spo2", "workout", "session", "tag", "enhanced_tag",
+    "sleep_time", "rest_mode_period", "ring_configuration",
+    "daily_stress", "daily_cardiovascular_age", "daily_resilience",
+    "vO2_max", "heartrate",
+)
+
+
+def _webhook_request(client_id, client_secret, method, path="", body=None):
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(
+        WEBHOOK_BASE + path, data=data, method=method,
+        headers={
+            "x-client-id": client_id,
+            "x-client-secret": client_secret,
+            "Content-Type": "application/json",
+        })
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "ignore")[:500]
+        raise OuraError(
+            "Oura webhook API error (HTTP %s): %s" % (e.code, detail))
+
+
+def webhook_list(client_id, client_secret):
+    return _webhook_request(client_id, client_secret, "GET")
+
+
+def webhook_get(client_id, client_secret, subscription_id):
+    return _webhook_request(client_id, client_secret, "GET",
+                            "/" + subscription_id)
+
+
+def webhook_create(client_id, client_secret, callback_url,
+                   event_type="create", data_type="daily_sleep",
+                   verification_token=None):
+    """Create a subscription. Oura will GET-verify callback_url before
+    activating it; the URL must be public HTTPS."""
+    if event_type not in WEBHOOK_EVENT_TYPES:
+        raise OuraError("event_type must be one of %s"
+                        % (", ".join(WEBHOOK_EVENT_TYPES)))
+    if data_type not in WEBHOOK_DATA_TYPES:
+        raise OuraError("data_type must be one of %s"
+                        % (", ".join(WEBHOOK_DATA_TYPES)))
+    if not callback_url.startswith("https://"):
+        raise OuraError("Oura requires the callback URL to be HTTPS.")
+    if verification_token is None:
+        verification_token = secrets.token_hex(32)
+    return _webhook_request(client_id, client_secret, "POST", "", {
+        "callback_url": callback_url,
+        "event_type": event_type,
+        "data_type": data_type,
+        "verification_token": verification_token,
+    })
+
+
+def webhook_delete(client_id, client_secret, subscription_id):
+    return _webhook_request(client_id, client_secret, "DELETE",
+                            "/" + subscription_id)
+
+
+def webhook_renew(client_id, client_secret, subscription_id):
+    """Renew a subscription, resetting its ~90-day expiry clock."""
+    return _webhook_request(client_id, client_secret, "PUT",
+                            "/renew/" + subscription_id)
